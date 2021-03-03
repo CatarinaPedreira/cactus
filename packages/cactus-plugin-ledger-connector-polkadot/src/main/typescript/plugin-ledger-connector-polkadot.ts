@@ -25,7 +25,7 @@ import {
 } from "@hyperledger/cactus-common";
 import { promisify } from "util";
 
-// Should work further on this
+//Should work further on this
 export interface IPluginLedgerConnectorPolkadotOptions
   extends ICactusPluginOptions {
   logLevel?: LogLevelDesc;
@@ -141,6 +141,7 @@ export class PluginLedgerConnectorPolkadot
   > {
     return ConsensusAlgorithmFamily.STAKE;
   }
+
   //
   // public async transact(req: RunTransactionRequest) {
   //   //const fnTag = `${this.className}#transact()`;
