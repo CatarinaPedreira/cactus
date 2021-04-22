@@ -22,8 +22,9 @@ import {
   LogLevelDesc,
   LoggerProvider,
 } from "@hyperledger/cactus-common";
+import { promisify } from "util";
 
-//Should work further on this
+// Should work further on this
 export interface IPluginLedgerConnectorPolkadotOptions
   extends ICactusPluginOptions {
   logLevel?: LogLevelDesc;
@@ -48,8 +49,13 @@ export class PluginLedgerConnectorPolkadot
   constructor(public readonly opts: IPluginLedgerConnectorPolkadotOptions) {
     const fnTag = `${this.className}#constructor()`;
     Checks.truthy(opts, `${fnTag} arg options`);
+    if (typeof opts.logLevel !== "undefined") {
+      Checks.truthy(opts.logLevel, `${fnTag} options.logLevelDesc`);
+    }
+    Checks.truthy(opts.pluginRegistry, `${fnTag} options.pluginRegistry`);
+    Checks.truthy(opts.wsProviderUrl, `${fnTag} options.wsProviderUrl`);
     Checks.truthy(opts.instanceId, `${fnTag} options.instanceId`);
-    //Should check each field of opts
+
     const level = this.opts.logLevel || "INFO";
     const label = this.className;
     this.log = LoggerProvider.getOrCreate({ level, label });
@@ -69,11 +75,15 @@ export class PluginLedgerConnectorPolkadot
   }
 
   public async installWebServices(): Promise<IWebServiceEndpoint[]> {
-    throw new Error("Method not implemented.");
+    throw Error("Not implemented yet");
   }
 
-  public shutdown(): Promise<void> {
-    throw new Error("Method not implemented.");
+  public async shutdown(): Promise<void> {
+    const serverMaybe = this.getHttpServer();
+    if (serverMaybe.isPresent()) {
+      const server = serverMaybe.get();
+      await promisify(server.close.bind(server))();
+    }
   }
 
   public getInstanceId(): string {
