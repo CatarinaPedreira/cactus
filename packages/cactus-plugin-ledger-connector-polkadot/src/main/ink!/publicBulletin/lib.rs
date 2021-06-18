@@ -89,8 +89,8 @@ mod public_bulletin {
 
                 // Check if this view already exists in the commitments of other members, for the given height
                 for commitment in commitments.iter() {
+                    // If the view already exists in this height (published by a different member), it means that it is valid, so it can be published right away
                     if (*view == commitment.0) && (&self.calculate_rolling_hash(height.clone(), member) == rolling_hash) {
-                        // If the view already exists in this height (published by a different member), it means that it is valid, so it can be published right away
                         self.add_and_publish_view(height.clone(), member, view, rolling_hash);
                         published = true;
                         break;
