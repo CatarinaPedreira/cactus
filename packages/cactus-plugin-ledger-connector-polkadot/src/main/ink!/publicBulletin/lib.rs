@@ -13,7 +13,7 @@ mod public_bulletin {
     use std::hash::Hasher;
     use ink_storage::traits::PackedLayout;
     use ink_storage::{collections::HashMap as HashMap, alloc::Box as StorageBox, collections::Vec as Vec};
-    use ink_env::AccountId as InkAccountId;
+    use ink_env::{AccountId as InkAccountId};
 
     #[ink(event)]
     /// Emitted when a view is published
@@ -48,7 +48,9 @@ mod public_bulletin {
         /// Each members' approval or disapproval of each heights' commitments
         replies_per_member: HashMap<InkAccountId, StorageBox<HashMap<i32, String>>>,
         /// Account ID's which correspond to the committee members of the blockchain
-        whitelist: Vec<InkAccountId>
+        whitelist: Vec<InkAccountId>,
+        /// The account of the owner of this contract
+        owner: InkAccountId
     }
 
     impl PublicBulletin {
@@ -59,19 +61,19 @@ mod public_bulletin {
                 commitments_per_member: HashMap::new(),
                 replies_per_member: HashMap::new(),
                 whitelist: Vec::new(),
+                owner: Self::env().caller()
             }
         }
 
-        // #[ink(message)]
-        // pub fn get_commitments_per_member(&self) -> &HashMap<InkAccountId, Box<HashMap<i32, Commitment>>> {
-        //     return &self.commitments_per_member
-        // }
-        //
-        // #[ink(message)]
-        // pub fn get_whitelist(&self) -> &Vec<InkAccountId> {
-        //     &self.whitelist
-        // }
-
+        /// Add a committee member to this contract
+        #[ink(message)]
+        pub fn add_member(&mut self, member: &InkAccountId) {
+            if !(self.check_contains(&self.whitelist, member)) {
+                self.whitelist.push(*member);
+                self.commitments_per_member.insert(*member, StorageBox::new(HashMap::new()));
+                self.replies_per_member.insert(*member, StorageBox::new(HashMap::new()));
+            }
+        }
 
         /// Publish a given commitment (on a given height) in the public bulletin and announce it to the network
         #[ink(message)]
@@ -81,19 +83,19 @@ mod public_bulletin {
                 let mut published = false;
                 let commitments = self.get_all_commitments(height);
 
-                // In case the member does not yet belong to the commitments_per_member hashmap, add the corresponding entry
-                if !(self.commitments_per_member.contains_key(member)) {
-                    let new_commitments = StorageBox::new(HashMap::new());
-                    self.commitments_per_member.insert((*member).clone(), new_commitments);
-                }
-
                 // Check if this view already exists in the commitments of other members, for the given height
                 for commitment in commitments.iter() {
                     // If the view already exists in this height (published by a different member), it means that it is valid, so it can be published right away
-                    if (*view == commitment.0) && (&self.calculate_rolling_hash(height.clone(), member) == rolling_hash) {
-                        self.add_and_publish_view(height.clone(), member, view, rolling_hash);
-                        published = true;
-                        break;
+                    if *view == commitment.0 {
+                        // If the provided rolling hash is correct, we add and publish the view
+                        if &(self.calculate_rolling_hash(height.clone(), member)) == rolling_hash {
+                            self.add_and_publish_view(height.clone(), member, view, rolling_hash);
+                            published = true;
+                            break;
+                        // Else, the view is not published and a conflict arises
+                        } else {
+                            return self.report_conflict(height, member, view, rolling_hash);
+                        }
                     }
                 }
 
@@ -135,12 +137,6 @@ mod public_bulletin {
         pub fn evaluate_view(&mut self, height: i32, member: &InkAccountId, verdict: String){
             // Check if the account that wants to evaluate a view is actually a member of the blockchain
             if self.check_contains(&self.whitelist, member) {
-                // In case the member does not yet belong to the replies_per_member hashmap, add the corresponding entry
-                if !(self.replies_per_member.contains_key(member)) {
-                    let new_replies = StorageBox::new(HashMap::new());
-                    self.replies_per_member.insert(*member, new_replies);
-                }
-
                 // Add reply to the corresponding member and height
                 self.replies_per_member.get_mut(member).unwrap().insert(height, verdict);
             }
@@ -244,9 +240,29 @@ mod public_bulletin {
             res
         }
 
+
+        // ********************************* Functions for tests **********************************
+
+        fn get_owner(&self) -> InkAccountId {
+            self.owner
+        }
+
+        /// Aux: Get wrapped commitment for given height
+        fn get_wrapped_commitment(&self, height: i32, member: &InkAccountId) -> Option<&Commitment> {
+            let option = self.commitments_per_member.get(member);
+            if option.is_none() {
+                None
+            } else {
+                option.unwrap().get(&height)
+            }
+        }
+
+        fn add_commitment_manually(&mut self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) {
+            self.commitments_per_member.get_mut(member).unwrap().insert(height, (view.to_string(), rolling_hash.to_string()));
+        }
+
     }
 
-    // TODO finish tests !!
     #[cfg(test)]
     mod tests {
         /// Imports all the definitions from the outer scope so we can use them here.
@@ -255,12 +271,37 @@ mod public_bulletin {
         /// Imports `ink_lang` so we can use `#[ink::test]`.
         use ink_lang as ink;
 
-        /// We test if the default constructor does its job.
+        /// We first test if the whitelist works, only allowing authorized members, that need to be added to the list, to perform actions.
         #[ink::test]
-        fn default_works() {
-            //let public_bulletin_sc = PublicBulletin::default();
-            //public_bulletin_sc.get_whitelist();
-            //public_bulletin_sc.get_commitments_per_member();
+        fn whitelist_works() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TryAddView"), &String::from("None"));
+            assert_eq!(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()), None);
         }
+
+        #[ink::test]
+        fn equal_views() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&InkAccountId::default());
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.add_commitment_manually(1, &InkAccountId::default(), &String::from("TestEqualViews"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TestEqualViews"), &String::from("None"));
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &InkAccountId::default()).unwrap()), (String::from("TestEqualViews"), String::from("None")));
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("TestEqualViews"), String::from("None")));
+        }
+
+        #[ink::test]
+        fn equal_views_wrong_hash() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&InkAccountId::default());
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.add_commitment_manually(1, &InkAccountId::default(), &String::from("TestEqualViews"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TestEqualViews"), &String::from("WrongHash"));
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &InkAccountId::default()).unwrap()), (String::from("TestEqualViews"), String::from("None")));
+            assert_eq!(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()), None);
+        }
+
+        // TODO missing tests related to the approve_view and evaluate_view functions
+
     }
 }
