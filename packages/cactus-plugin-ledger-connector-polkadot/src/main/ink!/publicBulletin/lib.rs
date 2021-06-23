@@ -37,7 +37,6 @@ mod public_bulletin {
         height: i32,
         member: InkAccountId,
         view: String,
-        rolling_hash: String,
     }
 
     #[ink(storage)]
@@ -45,8 +44,8 @@ mod public_bulletin {
     pub struct PublicBulletin {
         /// Each member is associated with several heights, and each height is associated with a commitment
         commitments_per_member: HashMap<InkAccountId, StorageBox<HashMap<i32, Commitment>>>,
-        /// Each members' approval or disapproval of each heights' commitments
-        replies_per_member: HashMap<InkAccountId, StorageBox<HashMap<i32, String>>>,
+        /// Each member is associated with several heights, and each height is associated with the evaluations of other members for that commitment
+        replies_per_member: HashMap<InkAccountId, StorageBox<HashMap<i32, StorageBox<Vec<String>>>>>,
         /// Account ID's which correspond to the committee members of the blockchain
         whitelist: Vec<InkAccountId>,
         /// The account of the owner of this contract
@@ -69,9 +68,9 @@ mod public_bulletin {
         #[ink(message)]
         pub fn add_member(&mut self, member: &InkAccountId) {
             if !(self.check_contains(&self.whitelist, member)) {
-                self.whitelist.push(*member);
-                self.commitments_per_member.insert(*member, StorageBox::new(HashMap::new()));
-                self.replies_per_member.insert(*member, StorageBox::new(HashMap::new()));
+                self.whitelist.push((*member).clone());
+                self.commitments_per_member.insert((*member).clone(), StorageBox::new(HashMap::new()));
+                self.replies_per_member.insert((*member).clone(), StorageBox::new(HashMap::new()));
             }
         }
 
@@ -80,49 +79,57 @@ mod public_bulletin {
         pub fn publish_view(&mut self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) {
             // Check if the account that wants to publish a view is actually a member of the permissioned blockchain
             if self.check_contains(&self.whitelist, member) {
-                let mut published = false;
-                let commitments = self.get_all_commitments(height);
+                // Check if a view for this member and height already exists
+                if !(self.commitments_per_member.get(member).unwrap().get(&height).is_some()) {
+                    let mut published = false;
+                    let commitments = self.get_all_commitments(height);
 
-                // Check if this view already exists in the commitments of other members, for the given height
-                for commitment in commitments.iter() {
-                    // If the view already exists in this height (published by a different member), it means that it is valid, so it can be published right away
-                    if *view == commitment.0 {
-                        // If the provided rolling hash is correct, we add and publish the view
-                        if &(self.calculate_rolling_hash(height.clone(), member)) == rolling_hash {
-                            self.add_and_publish_view(height.clone(), member, view, rolling_hash);
-                            published = true;
-                            break;
-                        // Else, the view is not published and a conflict arises
-                        } else {
-                            return self.report_conflict(height, member, view, rolling_hash);
+                    // Check if this view already exists in the commitments of other members, for the given height
+                    for commitment in commitments.iter() {
+                        // If the view already exists in this height (published by a different member), it means that it is valid, so it can be published right away
+                        if *view == commitment.0 {
+                            // If the provided rolling hash is correct, we add and publish the view
+                            if &(self.calculate_rolling_hash(height.clone(), member)) == rolling_hash {
+                                self.add_and_publish_view(height.clone(), member, view, rolling_hash);
+                                published = true;
+                                break;
+                                // Else, the view is not published and a conflict arises
+                            } else {
+                                return self.report_conflict(height.clone(), member, view, rolling_hash);
+                            }
                         }
                     }
-                }
 
-                // In case the view is new, it has to be approved by the member committee to be published
-                if !published && self.approve_view(height.clone(), member, view, rolling_hash) {
-                    self.add_and_publish_view(height.clone(), member, view, rolling_hash);
+                    // In case the view is new, it has to be approved by the member committee to be published
+                    if !published && self.approve_view(height, member, view, rolling_hash) && &(self.calculate_rolling_hash(height, member)) == rolling_hash {
+                        self.add_and_publish_view(height, member, view, rolling_hash);
+                    }
                 }
             }
         }
 
         /// Approve a commitment or rise a conflict for it, depending on the committee members' evaluation
-        fn approve_view(&self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) -> bool {
+        fn approve_view(&mut self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) -> bool {
+            let member_replies = self.replies_per_member.get_mut(member).unwrap();
+
+            // Initialize reply vector for this height and member
+            if member_replies.get(&height).is_none() {
+                member_replies.insert(height, StorageBox::new(Vec::new()));
+            }
 
             // Emit event to request the committee members to approve a commitment with a given height and member
             self.env().emit_event(ViewApprovalRequest {
                 height: height.clone(),
                 member: (*member).clone(),
                 view: (*view).clone(),
-                rolling_hash: (*rolling_hash).clone(),
             });
 
             // Block thread until getting a number of replies equal to the size of the quorum for the current committee members.
             // We trust that we will always have at least this amount of replies, hence that this loop will never be infinite
-            while !(self.get_all_replies(height).len() == self.calculate_quorum()) {}
+            while !(self.get_all_replies(&height, member).len() == self.calculate_quorum()) {}
 
             // After getting all replies, if all members approve the view, it will be published
-            if !self.check_contains(&self.get_all_replies(height), &String::from("NOK")) {
+            if !self.check_contains(&self.get_all_replies(&height, member), &String::from("NOK")) {
                 true
             }
             else {
@@ -133,12 +140,10 @@ mod public_bulletin {
         }
 
         /// A committee member calls this function to approve or reject a given view
-        #[ink(message)]
-        pub fn evaluate_view(&mut self, height: i32, member: &InkAccountId, verdict: String){
+        fn evaluate_view(&mut self, height: i32, evaluator_member: &InkAccountId, evaluated_member: &InkAccountId, verdict: String) {
             // Check if the account that wants to evaluate a view is actually a member of the blockchain
-            if self.check_contains(&self.whitelist, member) {
-                // Add reply to the corresponding member and height
-                self.replies_per_member.get_mut(member).unwrap().insert(height, verdict);
+            if self.check_contains(&self.whitelist, evaluator_member) {
+                self.replies_per_member.get_mut(evaluated_member).unwrap().get_mut(&height).unwrap().push(verdict);
             }
         }
 
@@ -180,21 +185,25 @@ mod public_bulletin {
         }
 
         /// Aux: Retrieve all replies for a given height
-        fn get_all_replies(&self, height: i32) -> Vec<String> {
-            let mut result: Vec<String> = Vec::new();
-            for (_, map) in self.replies_per_member.iter() {
-                let entry = map.get(&height);
-                if entry.is_some() {
-                    // If the reply is not none, push it to result vector
-                    result.push(entry.unwrap().to_string());
+        fn get_all_replies(&self, height: &i32, member: &InkAccountId) -> Vec<String> {
+            let mut replies: Vec<String> = Vec::new();
+            let map_option = self.replies_per_member.get(member).unwrap().get(height);
+            if map_option.is_some() {
+                for str in map_option.unwrap().iter() {
+                    replies.push(str.to_string());
                 }
             }
-            result
+            replies
         }
 
         /// Aux: Calculate quorum according to current committee members
         fn calculate_quorum(&self) -> u32 {
-            (self.whitelist.len() / 2) + 1
+            let res = self.whitelist.len() / 2;
+            if self.whitelist.len() <= 2 {
+                res
+            } else {
+                res + 1
+            }
         }
 
         /// Aux: Add a commitment to the Public Bulletin and emit an event to announce this to the network
@@ -241,10 +250,11 @@ mod public_bulletin {
         }
 
 
-        // ********************************* Functions for tests **********************************
+        // ******************************* Functions for test usage ********************************
 
+        /// Aux, get contract owner
         fn get_owner(&self) -> InkAccountId {
-            self.owner
+            (self.owner).clone()
         }
 
         /// Aux: Get wrapped commitment for given height
@@ -257,19 +267,25 @@ mod public_bulletin {
             }
         }
 
+        /// Aux: Add a commitment manually, without having to publish it
         fn add_commitment_manually(&mut self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) {
             self.commitments_per_member.get_mut(member).unwrap().insert(height, (view.to_string(), rolling_hash.to_string()));
+        }
+
+        /// Aux: Add a new height to the replies_per_member hashmap
+        fn add_height_to_replies(&mut self, height: i32, member: &InkAccountId) {
+            self.replies_per_member.get_mut(member).unwrap().insert(height, StorageBox::new(Vec::new()));
         }
 
     }
 
     #[cfg(test)]
     mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
+        /// Imports definitions from the outer scope so we can use them here.
         use super::*;
 
-        /// Imports `ink_lang` so we can use `#[ink::test]`.
         use ink_lang as ink;
+        use ink_env::AccountId;
 
         /// We first test if the whitelist works, only allowing authorized members, that need to be added to the list, to perform actions.
         #[ink::test]
@@ -280,28 +296,112 @@ mod public_bulletin {
         }
 
         #[ink::test]
-        fn equal_views() {
+        fn pre_existing_view_correct_hash() {
             let mut public_bulletin_sc = PublicBulletin::default();
             public_bulletin_sc.add_member(&InkAccountId::default());
             public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
             public_bulletin_sc.add_commitment_manually(1, &InkAccountId::default(), &String::from("TestEqualViews"), &String::from("None"));
             public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TestEqualViews"), &String::from("None"));
+
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &InkAccountId::default()).unwrap()), (String::from("TestEqualViews"), String::from("None")));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("TestEqualViews"), String::from("None")));
         }
 
         #[ink::test]
-        fn equal_views_wrong_hash() {
+        fn pre_existing_view_incorrect_hash() {
             let mut public_bulletin_sc = PublicBulletin::default();
             public_bulletin_sc.add_member(&InkAccountId::default());
             public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
             public_bulletin_sc.add_commitment_manually(1, &InkAccountId::default(), &String::from("TestEqualViews"), &String::from("None"));
             public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TestEqualViews"), &String::from("WrongHash"));
+
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &InkAccountId::default()).unwrap()), (String::from("TestEqualViews"), String::from("None")));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()), None);
         }
 
-        // TODO missing tests related to the approve_view and evaluate_view functions
+        #[ink::test]
+        fn new_view_one_member() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("View"), &String::from("None"));
 
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("View"), String::from("None")));
+        }
+
+        #[ink::test]
+        fn new_view_two_approvals(){
+            let mut public_bulletin_sc = PublicBulletin::default();
+            let mut reply_vec = Vec::new();
+            reply_vec.push(String::from("OK"));
+            reply_vec.push(String::from("Ok"));
+
+            public_bulletin_sc.add_member(&AccountId::from([0x2; 32]));
+            public_bulletin_sc.add_member(&AccountId::from([0x3; 32]));
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.add_height_to_replies(1, &public_bulletin_sc.get_owner());
+
+            // Note: Once the contract is deployed, the three functions below will not be called sequentially.
+            // When the 'publish_view()' function is called, it will announce a view approval request and then concurrently
+            // wait for a given number of calls to the 'evaluate_view()' function before it proceeds.
+            public_bulletin_sc.evaluate_view(1, &AccountId::from([0x2; 32]), &public_bulletin_sc.get_owner(), String::from("OK"));
+            public_bulletin_sc.evaluate_view(1, &AccountId::from([0x3; 32]), &public_bulletin_sc.get_owner(), String::from("OK"));
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("View"), &String::from("None"));
+
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("View"), String::from("None")));
+        }
+
+        #[ink::test]
+        fn new_view_approval_and_disapproval(){
+            let mut public_bulletin_sc = PublicBulletin::default();
+            let mut reply_vec = Vec::new();
+            reply_vec.push(String::from("OK"));
+            reply_vec.push(String::from("Ok"));
+
+            public_bulletin_sc.add_member(&AccountId::from([0x2; 32]));
+            public_bulletin_sc.add_member(&AccountId::from([0x3; 32]));
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.add_height_to_replies(1, &public_bulletin_sc.get_owner());
+
+            // Note: Once the contract is deployed, the three functions below will not be called sequentially.
+            // When the 'publish_view()' function is called, it will announce a view approval request and then concurrently
+            // wait for a given number of calls to the 'evaluate_view()' function before it proceeds.
+            public_bulletin_sc.evaluate_view(1, &AccountId::from([0x2; 32]), &public_bulletin_sc.get_owner(), String::from("OK"));
+            public_bulletin_sc.evaluate_view(1, &AccountId::from([0x3; 32]), &public_bulletin_sc.get_owner(), String::from("NOK"));
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("View"), &String::from("None"));
+
+            assert_eq!(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()), None);
+        }
+
+        #[ink::test]
+        fn two_views_correct_hash() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("View1"), &String::from("None"));
+            public_bulletin_sc.publish_view(2, &public_bulletin_sc.get_owner(), &String::from("View2"), &String::from("6d8694a1e486efa9"));
+
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("View1"), String::from("None")));
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(2, &public_bulletin_sc.get_owner()).unwrap()), (String::from("View2"), String::from("6d8694a1e486efa9")));
+        }
+
+        #[ink::test]
+        fn three_views_incorrect_hash() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("View1"), &String::from("None"));
+            public_bulletin_sc.publish_view(2, &public_bulletin_sc.get_owner(), &String::from("View2"), &String::from("IncorrectHash"));
+
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("View1"), String::from("None")));
+            assert_eq!(public_bulletin_sc.get_wrapped_commitment(2, &public_bulletin_sc.get_owner()), None);
+        }
+
+        #[ink::test]
+        fn two_commitments_same_height_and_member() {
+            let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("FirstView"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TryReplaceFirst"), &String::from("None"));
+
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("FirstView"), String::from("None")));
+        }
     }
 }
