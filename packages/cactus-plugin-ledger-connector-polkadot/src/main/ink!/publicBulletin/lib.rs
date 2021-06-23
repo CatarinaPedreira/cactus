@@ -287,7 +287,6 @@ mod public_bulletin {
         use ink_lang as ink;
         use ink_env::AccountId;
 
-        /// We first test if the whitelist works, only allowing authorized members, that need to be added to the list, to perform actions.
         #[ink::test]
         fn whitelist_works() {
             let mut public_bulletin_sc = PublicBulletin::default();
