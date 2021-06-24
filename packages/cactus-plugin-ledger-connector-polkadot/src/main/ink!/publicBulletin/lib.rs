@@ -74,6 +74,17 @@ mod public_bulletin {
             }
         }
 
+        /// Remove a member from this contract
+        #[ink(message)]
+        pub fn remove_member(&mut self, member: &InkAccountId) {
+            if self.check_contains(&self.whitelist, member) {
+                let index = self.whitelist.iter().position(|x| x == member).unwrap();
+                self.whitelist.swap_remove_drop(index as u32);
+                self.commitments_per_member.take(member);
+                self.replies_per_member.take(member);
+            }
+        }
+
         /// Publish a given commitment (on a given height) in the public bulletin and announce it to the network
         #[ink(message)]
         pub fn publish_view(&mut self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) {
@@ -290,8 +301,12 @@ mod public_bulletin {
         #[ink::test]
         fn whitelist_works() {
             let mut public_bulletin_sc = PublicBulletin::default();
+            public_bulletin_sc.add_member(&public_bulletin_sc.get_owner());
             public_bulletin_sc.publish_view(1, &public_bulletin_sc.get_owner(), &String::from("TryAddView"), &String::from("None"));
-            assert_eq!(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()), None);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1, &public_bulletin_sc.get_owner()).unwrap()), (String::from("TryAddView"), String::from("None")));
+            public_bulletin_sc.remove_member(&public_bulletin_sc.get_owner());
+            public_bulletin_sc.publish_view(2, &public_bulletin_sc.get_owner(), &String::from("TryAddOtherView"), &String::from("None"));
+            assert_eq!(public_bulletin_sc.get_wrapped_commitment(2, &public_bulletin_sc.get_owner()), None);
         }
 
         #[ink::test]
