@@ -1,0 +1,58 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Hyperledger Cactus Plugin - Connector Polkadot",
+    "description": "Can perform basic tasks on a Polkadot parachain",
+    "version": "0.0.1",
+    "license": {
+      "name": "Apache 2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://www.cactus.stream/{basePath}",
+      "description": "Public test instance",
+      "variables": {
+        "basePath": {
+          "default": ""
+        }
+      }
+    },
+    {
+      "url": "http://localhost:4000/{basePath}",
+      "description": "Local test instance",
+      "variables": {
+        "basePath": {
+          "default": ""
+        }
+      }
+    }
+  ],
+  "components": {
+    "schemas": {
+      "RunTransactionRequest": {
+
+      },
+      "RunTransactionResponse": {
+
+      },
+      "DeployContractInkWasmV1Request": {
+
+      },
+      "DeployContractInkWasmV1Response": {
+
+      },
+      "InvokeContractV1Request": {
+
+      },
+      "InvokeContractV1Response": {
+
+      }
+
+      },
+    "paths": {
+
+    }
+  }
+}
