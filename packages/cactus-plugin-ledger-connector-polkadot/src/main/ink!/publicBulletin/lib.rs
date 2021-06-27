@@ -272,8 +272,7 @@ mod public_bulletin {
 
         /// Aux: Get wrapped commitment of this account for a given height
         fn get_wrapped_commitment(&self, height: i32) -> Option<&Commitment> {
-            let caller: &InkAccountId = &self.env().caller();
-            let option = self.commitments_per_member.get(caller);
+            let option = self.commitments_per_member.get(&(self.owner));
             if option.is_none() {
                 None
             } else {
@@ -288,8 +287,7 @@ mod public_bulletin {
 
         /// Aux: Add a new height to the replies_per_member hashmap
         fn add_height_to_replies(&mut self, height: i32) {
-            let caller: &InkAccountId = &self.env().caller();
-            self.replies_per_member.get_mut(caller).unwrap().insert(height, StorageBox::new(Vec::new()));
+            self.replies_per_member.get_mut(&(self.owner)).unwrap().insert(height, StorageBox::new(Vec::new()));
         }
 
     }
