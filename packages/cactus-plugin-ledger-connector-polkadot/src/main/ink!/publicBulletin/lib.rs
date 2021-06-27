@@ -69,8 +69,7 @@ mod public_bulletin {
         /// Add a committee member to this contract
         #[ink(message)]
         pub fn add_member(&mut self, member: &InkAccountId) {
-            let caller: InkAccountId = self.env().caller();
-            if caller == InkAccountId::from([0x1; 32]) && !(self.check_contains(&self.whitelist, member)) {
+            if self.owner == InkAccountId::from([0x1; 32]) && !(self.check_contains(&self.whitelist, member)) {
                 self.whitelist.push((*member).clone());
                 self.commitments_per_member.insert((*member).clone(), StorageBox::new(HashMap::new()));
                 self.replies_per_member.insert((*member).clone(), StorageBox::new(HashMap::new()));
@@ -81,8 +80,7 @@ mod public_bulletin {
         /// Remove a member from this contract
         #[ink(message)]
         pub fn remove_member(&mut self, member: &InkAccountId) {
-            let caller: InkAccountId = self.env().caller();
-            if caller == InkAccountId::from([0x1; 32]) && self.check_contains(&self.whitelist, member) {
+            if self.owner == InkAccountId::from([0x1; 32]) && self.check_contains(&self.whitelist, member) {
                 let index = self.whitelist.iter().position(|x| x == member).unwrap();
                 self.whitelist.swap_remove_drop(index as u32);
                 self.commitments_per_member.take(member);
@@ -94,10 +92,9 @@ mod public_bulletin {
         #[ink(message)]
         pub fn publish_view(&mut self, height: i32, view: &String, rolling_hash: &String) {
             // Check if the account that wants to publish a view is actually a member of the permissioned blockchain
-            let caller: &InkAccountId = &self.env().caller();
-            if self.check_contains(&self.whitelist, caller) {
+            if self.check_contains(&self.whitelist, &(self.owner)) {
                 // Check if a view for this member and height already exists
-                if !(self.commitments_per_member.get(caller).unwrap().get(&height).is_some()) {
+                if !(self.commitments_per_member.get(&(self.owner)).unwrap().get(&height).is_some()) {
                     let mut published = false;
                     let commitments = self.get_all_commitments(height);
 
@@ -127,8 +124,7 @@ mod public_bulletin {
 
         /// Approve a commitment or rise a conflict for it, depending on the committee members' evaluation
         fn approve_view(&mut self, height: i32, view: &String, rolling_hash: &String) -> bool {
-            let caller: InkAccountId = self.env().caller();
-            let member_replies = self.replies_per_member.get_mut(&caller).unwrap();
+            let member_replies = self.replies_per_member.get_mut(&(self.owner)).unwrap();
 
             // Initialize reply vector for this height and member
             if member_replies.get(&height).is_none() {
@@ -138,7 +134,7 @@ mod public_bulletin {
             // Emit event to request the committee members to approve a commitment with a given height and member
             self.env().emit_event(ViewApprovalRequest {
                 height: height.clone(),
-                member: caller,
+                member: self.owner,
                 view: (*view).clone(),
             });
 
@@ -160,7 +156,7 @@ mod public_bulletin {
         /// A committee member calls this function to approve or reject a given view
         fn evaluate_view(&mut self, height: i32, evaluated_member: &InkAccountId, verdict: String) {
             // Check if the account that wants to evaluate a view is actually a member of the blockchain
-            if self.check_contains(&self.whitelist, &self.env().caller()) {
+            if self.check_contains(&self.whitelist, &(self.owner)) {
                 self.replies_per_member.get_mut(evaluated_member).unwrap().get_mut(&height).unwrap().push(verdict);
             }
         }
@@ -168,12 +164,11 @@ mod public_bulletin {
         /// Report a conflict for a given commitment
         #[ink(message)]
         pub fn report_conflict(&self, height: i32, view: &String, rolling_hash: &String) {
-            let caller: InkAccountId = self.env().caller();
             // Check if this account is actually a member of the blockchain
-            if self.check_contains(&self.whitelist, &caller) {
+            if self.check_contains(&self.whitelist, &(self.owner)) {
                 self.env().emit_event(ViewConflict {
                     height,
-                    member: caller,
+                    member: self.owner,
                     view: (*view).clone(),
                     rolling_hash: (*rolling_hash).clone(),
                 });
@@ -206,9 +201,8 @@ mod public_bulletin {
 
         /// Aux: Retrieve all replies for this account, for a given height
         fn get_all_replies(&self, height: &i32) -> Vec<String> {
-            let caller: &InkAccountId = &self.env().caller();
             let mut replies: Vec<String> = Vec::new();
-            let map_option = self.replies_per_member.get(caller).unwrap().get(height);
+            let map_option = self.replies_per_member.get(&(self.owner)).unwrap().get(height);
             if map_option.is_some() {
                 for str in map_option.unwrap().iter() {
                     replies.push(str.to_string());
@@ -229,11 +223,10 @@ mod public_bulletin {
 
         /// Aux: Add a commitment to the Public Bulletin and emit an event to announce this to the network
         fn add_and_publish_view(&mut self, height: i32, view: &String, rolling_hash: &String) {
-            let caller: InkAccountId = self.env().caller();
-            self.commitments_per_member.get_mut(&caller).unwrap().insert(height, ((*view).clone(), (*rolling_hash).clone()));
+            self.commitments_per_member.get_mut(&(self.owner)).unwrap().insert(height, ((*view).clone(), (*rolling_hash).clone()));
             self.env().emit_event(ViewPublished {
                 height: height.clone(),
-                member: caller,
+                member: self.owner,
                 view: (*view).clone(),
             });
         }
@@ -241,8 +234,7 @@ mod public_bulletin {
         /// Aux: Calculate the rolling hash for a given height and member
         fn calculate_rolling_hash(&self, height: i32) -> String {
             // Formula for rolling_hash: H(i) = hash(hash(V_(i-1)) || hash(H_(i-l1)))
-            let caller: &InkAccountId = &self.env().caller();
-            let previous_commitment_opt = self.commitments_per_member.get(caller).unwrap().get(&(height-1));
+            let previous_commitment_opt = self.commitments_per_member.get(&(self.owner)).unwrap().get(&(height-1));
             let res: String;
 
             // The rolling hash will only be calculated in case the member has a commitment for the previous height
