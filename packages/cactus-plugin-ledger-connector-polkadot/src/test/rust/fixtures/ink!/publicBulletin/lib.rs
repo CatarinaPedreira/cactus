@@ -168,15 +168,14 @@ mod public_bulletin {
                 }
             }
 
-            // After getting all replies, if all members approve the view, it will be published
-            if !self.check_contains(&self.get_all_replies(&height), &String::from("NOK")) {
-                true
-            }
-            else {
-                // If at least one member does not approve the view, a view conflict arises and it's not published
+
+            // After getting all replies, if at least one member does not approve the view, a view conflict arises and it's not published
+            if self.check_contains(&self.get_all_replies(&height), &String::from("NOK")) {
                 self.report_conflict(height.clone(), view, rolling_hash);
-                false
+                return false
             }
+            // If all members approve the view, it is published
+            return true
         }
 
         /// A committee member calls this function to approve or reject a given view
