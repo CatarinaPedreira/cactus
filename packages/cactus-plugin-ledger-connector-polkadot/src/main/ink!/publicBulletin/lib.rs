@@ -159,7 +159,7 @@ mod public_bulletin {
 
             // Block thread until getting a number of replies equal to the size of the quorum for the current committee members.
             // We trust that we will always have at least this amount of replies, hence that this loop will never be infinite
-            let initial_height = self.current_height.clone(); // 2
+            let initial_height = self.current_height.clone();
             while !(self.get_all_replies(&height).len() == self.calculate_quorum()) {
                 // If the operation times out, the existing replies are rolled back and the view will not be published
                 if self.current_height >= (initial_height + self.timeout.clone()) {
