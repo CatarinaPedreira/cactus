@@ -9,6 +9,9 @@ mod public_bulletin {
     /// A commitment is a (View, RollingHash) tuple, where a View represents a permissioned blockchain's state at a given height, and a RollingHash contains the history of past Views
     type Commitment = (String, String);
 
+    use ink_prelude::string::String;
+    use ink_prelude::string::ToString;
+    use ink_prelude::format;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
     use ink_storage::traits::PackedLayout;
@@ -86,28 +89,28 @@ mod public_bulletin {
 
         /// Add a committee member to this contract
         #[ink(message)]
-        pub fn add_member(&mut self, member: &InkAccountId) {
-            if self.env().caller() == InkAccountId::default() && !(self.check_contains(&self.whitelist, member)) {
-                self.whitelist.push((*member).clone());
-                self.commitments_per_member.insert((*member).clone(), StorageBox::new(HashMap::new()));
-                self.replies_per_member.insert((*member).clone(), StorageBox::new(HashMap::new()));
+        pub fn add_member(&mut self, member: InkAccountId) {
+            if self.env().caller() == InkAccountId::default() && !(self.check_contains(&self.whitelist, &member)) {
+                self.whitelist.push(member.clone());
+                self.commitments_per_member.insert(member.clone(), StorageBox::new(HashMap::new()));
+                self.replies_per_member.insert(member.clone(), StorageBox::new(HashMap::new()));
             }
         }
 
         /// Remove a member from this contract
         #[ink(message)]
-        pub fn remove_member(&mut self, member: &InkAccountId) {
-            if self.env().caller() == InkAccountId::default() && self.check_contains(&self.whitelist, member) {
-                let index = self.whitelist.iter().position(|x| x == member).unwrap();
+        pub fn remove_member(&mut self, member: InkAccountId) {
+            if self.env().caller() == InkAccountId::default() && self.check_contains(&self.whitelist, &member) {
+                let index = self.whitelist.iter().position(|x| x == &member).unwrap();
                 self.whitelist.swap_remove_drop(index as u32);
-                self.commitments_per_member.take(member);
-                self.replies_per_member.take(member);
+                self.commitments_per_member.take(&member);
+                self.replies_per_member.take(&member);
             }
         }
 
         /// Publish a given commitment (on a given height) in the public bulletin and announce it to the network
         #[ink(message)]
-        pub fn publish_view(&mut self, height: i32, view: &String, rolling_hash: &String) {
+        pub fn publish_view(&mut self, height: i32, view: String, rolling_hash: String) {
             let caller = self.env().caller();
             // Check if the account that wants to publish a view is actually a member of the permissioned blockchain
             if self.check_contains(&self.whitelist, &caller) {
@@ -119,29 +122,29 @@ mod public_bulletin {
                     // Check if this view already exists in the commitments of other members, for the given height
                     for commitment in commitments.iter() {
                         // If the view already exists in this height (published by a different member), it means that it is valid, so it can be published right away
-                        if *view == commitment.0 {
+                        if view == commitment.0 {
                             // If the provided rolling hash is correct, we add and publish the view
-                            if &(self.calculate_rolling_hash(height.clone())) == rolling_hash {
-                                self.add_and_publish_view(height.clone(), view, rolling_hash);
+                            if self.calculate_rolling_hash(height.clone()) == rolling_hash {
+                                self.add_and_publish_view(height.clone(), view.clone(), rolling_hash.clone());
                                 published = true;
                                 break;
                                 // Else, the view is not published and a conflict arises
                             } else {
-                                return self.report_conflict(height.clone(), view, rolling_hash);
+                                return self.report_conflict(height.clone(), view.clone(), rolling_hash.clone());
                             }
                         }
                     }
 
                     // In case the view is new, it has to be approved by the member committee to be published
-                    if !published && self.approve_view(height.clone(), view, rolling_hash) && &(self.calculate_rolling_hash(height.clone())) == rolling_hash {
-                        self.add_and_publish_view(height.clone(), view, rolling_hash);
+                    if !published && self.approve_view(height.clone(), view.clone(), rolling_hash.clone()) && self.calculate_rolling_hash(height.clone()) == rolling_hash {
+                        self.add_and_publish_view(height.clone(), view.clone(), rolling_hash.clone());
                     }
                 }
             }
         }
 
         /// Approve a commitment or rise a conflict for it, depending on the committee members' evaluation
-        fn approve_view(&mut self, height: i32, view: &String, rolling_hash: &String) -> bool {
+        fn approve_view(&mut self, height: i32, view: String, rolling_hash: String) -> bool {
             let caller = self.env().caller();
             let member_replies = self.replies_per_member.get_mut(&caller).unwrap();
 
@@ -154,7 +157,7 @@ mod public_bulletin {
             self.env().emit_event(ViewApprovalRequest {
                 height: height.clone(),
                 member: caller.clone(),
-                view: (*view).clone(),
+                view: view.clone(),
             });
 
             // Block thread until getting a number of replies equal to the size of the quorum for the current committee members.
@@ -179,26 +182,38 @@ mod public_bulletin {
         }
 
         /// A committee member calls this function to approve or reject a given view
-        fn evaluate_view(&mut self, height: i32, evaluated_member: &InkAccountId, verdict: String) {
+        #[ink(message)]
+        pub fn evaluate_view(&mut self, height: i32, evaluated_member: InkAccountId, verdict: String) {
             // Check if the account that wants to evaluate a view is actually a member of the blockchain
             if self.check_contains(&self.whitelist, &(self.env().caller())) {
-                self.replies_per_member.get_mut(evaluated_member).unwrap().get_mut(&height).unwrap().push(verdict);
+                self.replies_per_member.get_mut(&evaluated_member).unwrap().get_mut(&height).unwrap().push(verdict);
             }
         }
 
         /// Report a conflict for a given commitment
         #[ink(message)]
-        pub fn report_conflict(&self, height: i32, view: &String, rolling_hash: &String) {
+        pub fn report_conflict(&self, height: i32, view: String, rolling_hash: String) {
             let caller = self.env().caller();
             // Check if this account is actually a member of the blockchain
             if self.check_contains(&self.whitelist, &caller) {
                 self.env().emit_event(ViewConflict {
                     height,
                     member: caller.clone(),
-                    view: (*view).clone(),
-                    rolling_hash: (*rolling_hash).clone(),
+                    view: view.clone(),
+                    rolling_hash: rolling_hash.clone(),
                 });
             }
+        }
+
+        /// Aux: Add a commitment to the Public Bulletin and emit an event to announce this to the network
+        fn add_and_publish_view(&mut self, height: i32, view: String, rolling_hash: String) {
+            let caller = self.env().caller();
+            self.commitments_per_member.get_mut(&caller).unwrap().insert(height, (view.clone(), rolling_hash.clone()));
+            self.env().emit_event(ViewPublished {
+                height: height.clone(),
+                member: caller.clone(),
+                view: view.clone(),
+            });
         }
 
         /// Aux: Check if vector contains a given element
@@ -245,17 +260,6 @@ mod public_bulletin {
             } else {
                 res + 1
             }
-        }
-
-        /// Aux: Add a commitment to the Public Bulletin and emit an event to announce this to the network
-        fn add_and_publish_view(&mut self, height: i32, view: &String, rolling_hash: &String) {
-            let caller = self.env().caller();
-            self.commitments_per_member.get_mut(&caller).unwrap().insert(height, ((*view).clone(), (*rolling_hash).clone()));
-            self.env().emit_event(ViewPublished {
-                height: height.clone(),
-                member: caller.clone(),
-                view: (*view).clone(),
-            });
         }
 
         /// Aux: Calculate the rolling hash for a given height and member
@@ -361,13 +365,13 @@ mod public_bulletin {
 
             // Set special account as caller to add a member. This is the only account with permission to perform this action
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
+            public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("TryAddView"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("TryAddView"), String::from("None"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TryAddView"), String::from("None")));
-            public_bulletin_sc.remove_member(&public_bulletin_sc.get_owner());
-            public_bulletin_sc.publish_view(2, &String::from("TryAddOtherView"), &String::from("None"));
+            public_bulletin_sc.remove_member(bob);
+            public_bulletin_sc.publish_view(2, String::from("TryAddOtherView"), String::from("None"));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(2), None);
         }
 
@@ -379,13 +383,13 @@ mod public_bulletin {
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
-            public_bulletin_sc.add_member(&alice);
+            public_bulletin_sc.add_member(bob);
+            public_bulletin_sc.add_member(alice);
 
             public_bulletin_sc.add_commitment_manually(1, &alice, &String::from("TestEqualViews"), &String::from("None"));
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("TestEqualViews"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), String::from("None"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TestEqualViews"), String::from("None")));
         }
 
@@ -398,13 +402,13 @@ mod public_bulletin {
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
-            public_bulletin_sc.add_member(&alice);
+            public_bulletin_sc.add_member(bob);
+            public_bulletin_sc.add_member(alice);
 
             public_bulletin_sc.add_commitment_manually(1, &alice, &String::from("TestEqualViews"), &String::from("None"));
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("TestEqualViews"), &String::from("WrongHash"));
+            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), String::from("WrongHash"));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1), None);
         }
 
@@ -416,10 +420,10 @@ mod public_bulletin {
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
+            public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1,&String::from("View"), &String::from("None"));
+            public_bulletin_sc.publish_view(1,String::from("View"), String::from("None"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View"), String::from("None")));
         }
 
@@ -432,9 +436,9 @@ mod public_bulletin {
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
-            public_bulletin_sc.add_member(&alice);
-            public_bulletin_sc.add_member(&jane);
+            public_bulletin_sc.add_member(bob);
+            public_bulletin_sc.add_member(alice);
+            public_bulletin_sc.add_member(jane);
             public_bulletin_sc.add_height_to_replies(1, &bob);
 
             // Note: Once the contract is deployed, the three functions below will not be called this way.
@@ -442,13 +446,13 @@ mod public_bulletin {
             // Then, it will wait for a given number of calls to the 'evaluate_view()' function (responses from the quorum) before it proceeds.
 
             set_caller_id(alice);
-            public_bulletin_sc.evaluate_view(1, &bob, String::from("OK"));
+            public_bulletin_sc.evaluate_view(1, bob, String::from("OK"));
 
             set_caller_id(jane);
-            public_bulletin_sc.evaluate_view(1, &bob, String::from("OK"));
+            public_bulletin_sc.evaluate_view(1, bob, String::from("OK"));
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("View"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("View"), String::from("None"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View"), String::from("None")));
         }
 
@@ -462,9 +466,9 @@ mod public_bulletin {
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
-            public_bulletin_sc.add_member(&alice);
-            public_bulletin_sc.add_member(&jane);
+            public_bulletin_sc.add_member(bob);
+            public_bulletin_sc.add_member(alice);
+            public_bulletin_sc.add_member(jane);
             public_bulletin_sc.add_height_to_replies(1, &bob);
 
             // Note: Once the contract is deployed, the three functions below will not be called this way.
@@ -472,13 +476,13 @@ mod public_bulletin {
             // Then, it will wait for a given number of calls to the 'evaluate_view()' function (responses from the quorum) before it proceeds.
 
             set_caller_id(alice);
-            public_bulletin_sc.evaluate_view(1, &bob, String::from("OK"));
+            public_bulletin_sc.evaluate_view(1, bob, String::from("OK"));
 
             set_caller_id(jane);
-            public_bulletin_sc.evaluate_view(1, &bob, String::from("NOK"));
+            public_bulletin_sc.evaluate_view(1, bob, String::from("NOK"));
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("View"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("View"), String::from("None"));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1), None);
         }
 
@@ -489,8 +493,8 @@ mod public_bulletin {
             let alice = InkAccountId::from([0x2; 32]);
 
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
-            public_bulletin_sc.add_member(&alice);
+            public_bulletin_sc.add_member(bob);
+            public_bulletin_sc.add_member(alice);
             public_bulletin_sc.add_height_to_replies(1, &bob);
 
             // Note: Once the contract is deployed, the three functions below will not be called this way.
@@ -502,7 +506,7 @@ mod public_bulletin {
             public_bulletin_sc.increment_cur_height();
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("View"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("View"), String::from("None"));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1), None);
             assert_eq!(public_bulletin_sc.get_wrapped_replies(1), None);
         }
@@ -514,11 +518,11 @@ mod public_bulletin {
 
             // Set special account as caller to add member
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
+            public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("View1"), &String::from("None"));
-            public_bulletin_sc.publish_view(2, &String::from("View2"), &String::from("6d8694a1e486efa9"));
+            public_bulletin_sc.publish_view(1, String::from("View1"), String::from("None"));
+            public_bulletin_sc.publish_view(2, String::from("View2"), String::from("6d8694a1e486efa9"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View1"), String::from("None")));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(2).unwrap()), (String::from("View2"), String::from("6d8694a1e486efa9")));
         }
@@ -530,11 +534,11 @@ mod public_bulletin {
 
             // Set special account as caller to add member
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
+            public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("View1"), &String::from("None"));
-            public_bulletin_sc.publish_view(2, &String::from("View2"), &String::from("IncorrectHash"));
+            public_bulletin_sc.publish_view(1, String::from("View1"), String::from("None"));
+            public_bulletin_sc.publish_view(2, String::from("View2"), String::from("IncorrectHash"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View1"), String::from("None")));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(2), None);
         }
@@ -546,11 +550,11 @@ mod public_bulletin {
 
             // Set special account as caller to add member
             set_caller_id(InkAccountId::default());
-            public_bulletin_sc.add_member(&bob);
+            public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, &String::from("FirstView"), &String::from("None"));
-            public_bulletin_sc.publish_view(1, &String::from("TryReplaceFirst"), &String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("FirstView"), String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("TryReplaceFirst"), String::from("None"));
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("FirstView"), String::from("None")));
         }
 
@@ -580,6 +584,5 @@ mod public_bulletin {
                 ink_env::test::CallData::new(ink_env::call::Selector::new([0x00; 4]))
             );
         }
-
     }
 }
