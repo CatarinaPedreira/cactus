@@ -389,7 +389,7 @@ mod public_bulletin {
             public_bulletin_sc.add_commitment_manually(1, &alice, String::from("TestEqualViews"), rolling_hash);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), rolling_hash);
+            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), rolling_hash.clone());
             assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TestEqualViews"), rolling_hash.clone()));
         }
 
