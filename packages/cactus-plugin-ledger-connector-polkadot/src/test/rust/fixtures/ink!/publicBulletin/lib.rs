@@ -7,13 +7,12 @@ use ink_lang as ink;
 mod public_bulletin {
 
     /// A commitment is a (View, RollingHash) tuple, where a View represents a permissioned blockchain's state at a given height, and a RollingHash contains the history of past Views
-    type Commitment = (String, String);
+    type Commitment = (String, [u8; 32]);
 
     use ink_prelude::string::String;
     use ink_prelude::string::ToString;
     use ink_prelude::format;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::Hasher;
+    use ink_env::hash::{Sha2x256, HashOutput};
     use ink_storage::traits::PackedLayout;
     use ink_storage::{collections::HashMap as HashMap, alloc::Box as StorageBox, collections::Vec as Vec};
     use ink_env::{AccountId as InkAccountId};
@@ -32,7 +31,7 @@ mod public_bulletin {
         height: i32,
         member: InkAccountId,
         view: String,
-        rolling_hash: String,
+        rolling_hash: [u8; 32],
     }
 
     #[ink(event)]
@@ -110,7 +109,7 @@ mod public_bulletin {
 
         /// Publish a given commitment (on a given height) in the public bulletin and announce it to the network
         #[ink(message)]
-        pub fn publish_view(&mut self, height: i32, view: String, rolling_hash: String) {
+        pub fn publish_view(&mut self, height: i32, view: String, rolling_hash: [u8; 32]) {
             let caller = self.env().caller();
             // Check if the account that wants to publish a view is actually a member of the permissioned blockchain
             if self.check_contains(&self.whitelist, &caller) {
@@ -144,7 +143,7 @@ mod public_bulletin {
         }
 
         /// Approve a commitment or rise a conflict for it, depending on the committee members' evaluation
-        fn approve_view(&mut self, height: i32, view: String, rolling_hash: String) -> bool {
+        fn approve_view(&mut self, height: i32, view: String, rolling_hash: [u8; 32]) -> bool {
             let caller = self.env().caller();
             let member_replies = self.replies_per_member.get_mut(&caller).unwrap();
 
@@ -192,7 +191,7 @@ mod public_bulletin {
 
         /// Report a conflict for a given commitment
         #[ink(message)]
-        pub fn report_conflict(&self, height: i32, view: String, rolling_hash: String) {
+        pub fn report_conflict(&self, height: i32, view: String, rolling_hash: [u8; 32]) {
             let caller = self.env().caller();
             // Check if this account is actually a member of the blockchain
             if self.check_contains(&self.whitelist, &caller) {
@@ -206,7 +205,7 @@ mod public_bulletin {
         }
 
         /// Aux: Add a commitment to the Public Bulletin and emit an event to announce this to the network
-        fn add_and_publish_view(&mut self, height: i32, view: String, rolling_hash: String) {
+        fn add_and_publish_view(&mut self, height: i32, view: String, rolling_hash: [u8; 32]) {
             let caller = self.env().caller();
             self.commitments_per_member.get_mut(&caller).unwrap().insert(height, (view.clone(), rolling_hash.clone()));
             self.env().emit_event(ViewPublished {
@@ -263,33 +262,32 @@ mod public_bulletin {
         }
 
         /// Aux: Calculate the rolling hash for a given height and member
-        fn calculate_rolling_hash(&self, height: i32) -> String {
+        fn calculate_rolling_hash(&self, height: i32) -> [u8; 32] {
             // Formula for rolling_hash: H(i) = hash(hash(V_(i-1)) || hash(H_(i-l1)))
             let previous_commitment_opt = self.commitments_per_member.get(&(self.env().caller())).unwrap().get(&(height-1));
-            let res: String;
+            let res: [u8; 32];
 
             // The rolling hash will only be calculated in case the member has a commitment for the previous height
             if previous_commitment_opt.is_some() {
                 let previous_commitment = previous_commitment_opt.unwrap();
-                let previous_view: &str = &previous_commitment.0;
-                let previous_rolling_hash: &str = &previous_commitment.1;
+                let previous_view = &previous_commitment.0;
+                let previous_rolling_hash: &[u8; 32] = &previous_commitment.1;
 
-                let mut hasher_view = DefaultHasher::new();
-                hasher_view.write(previous_view.as_bytes());
-                hasher_view.finish();
+                let mut output_view: [u8; 32] = <Sha2x256 as HashOutput>::Type::default();
+                ink_env::hash_encoded::<Sha2x256, _>(previous_view, &mut output_view); //output_view saves hash of previous_view
 
-                let mut hasher_roll = DefaultHasher::new();
-                hasher_roll.write(previous_rolling_hash.as_bytes());
-                hasher_roll.finish();
+                let mut output_roll: [u8; 32] = <Sha2x256 as HashOutput>::Type::default();
+                ink_env::hash_bytes::<Sha2x256>(previous_rolling_hash, &mut output_roll); //output_roll saves hash of previous_rolling_hash
 
-                let formatted_res: &str = &format!("{}{}", previous_view, previous_rolling_hash);
-                let mut hasher_res = DefaultHasher::new();
-                hasher_res.write(formatted_res.as_bytes());
-                res = format!("{:x}", hasher_res.finish());
+                let formatted_res = &format!("{}{}", String::from_utf8_lossy(&output_view), String::from_utf8_lossy(&output_roll));
 
-            // Otherwise, the rolling hash will be a simple "None" string
+                let mut output_res: [u8; 32] = <Sha2x256 as HashOutput>::Type::default();
+                ink_env::hash_encoded::<Sha2x256, _>(formatted_res, &mut output_res); // output_res saves the resulting hash
+                res = output_res;
+
+            // Otherwise, the rolling hash will correspond a default array (all zeros)
             } else {
-                res = String::from("None");
+                res = [0; 32];
             }
             res
         }
@@ -337,8 +335,8 @@ mod public_bulletin {
         }
 
         /// Aux: Add a commitment manually, without having to publish it
-        fn add_commitment_manually(&mut self, height: i32, member: &InkAccountId, view: &String, rolling_hash: &String) {
-            self.commitments_per_member.get_mut(member).unwrap().insert(height, (view.to_string(), rolling_hash.to_string()));
+        fn add_commitment_manually(&mut self, height: i32, member: &InkAccountId, view: String, rolling_hash: [u8; 32]) {
+            self.commitments_per_member.get_mut(member).unwrap().insert(height, (view, rolling_hash));
         }
 
         /// Aux: Add a new height to the replies_per_member hashmap
@@ -362,16 +360,17 @@ mod public_bulletin {
         fn whitelist_works() {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
+            let rolling_hash: [u8; 32] = [0; 32];
 
             // Set special account as caller to add a member. This is the only account with permission to perform this action
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("TryAddView"), String::from("None"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TryAddView"), String::from("None")));
+            public_bulletin_sc.publish_view(1, String::from("TryAddView"), rolling_hash);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TryAddView"), rolling_hash.clone()));
             public_bulletin_sc.remove_member(bob);
-            public_bulletin_sc.publish_view(2, String::from("TryAddOtherView"), String::from("None"));
+            public_bulletin_sc.publish_view(2, String::from("TryAddOtherView"), rolling_hash.clone());
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(2), None);
         }
 
@@ -380,17 +379,18 @@ mod public_bulletin {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
             let alice = InkAccountId::from([0x2; 32]);
+            let rolling_hash: [u8; 32] = [0; 32];
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
             public_bulletin_sc.add_member(alice);
 
-            public_bulletin_sc.add_commitment_manually(1, &alice, &String::from("TestEqualViews"), &String::from("None"));
+            public_bulletin_sc.add_commitment_manually(1, &alice, String::from("TestEqualViews"), rolling_hash);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), String::from("None"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TestEqualViews"), String::from("None")));
+            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), rolling_hash);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("TestEqualViews"), rolling_hash.clone()));
         }
 
 
@@ -399,16 +399,17 @@ mod public_bulletin {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
             let alice = InkAccountId::from([0x2; 32]);
+            let rolling_hash: [u8; 32] = [1; 32];
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
             public_bulletin_sc.add_member(alice);
 
-            public_bulletin_sc.add_commitment_manually(1, &alice, &String::from("TestEqualViews"), &String::from("None"));
+            public_bulletin_sc.add_commitment_manually(1, &alice, String::from("TestEqualViews"), rolling_hash);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), String::from("WrongHash"));
+            public_bulletin_sc.publish_view(1, String::from("TestEqualViews"), rolling_hash.clone());
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1), None);
         }
 
@@ -417,14 +418,15 @@ mod public_bulletin {
         fn new_view_one_member() {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
+            let rolling_hash: [u8; 32] = [0; 32];
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1,String::from("View"), String::from("None"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View"), String::from("None")));
+            public_bulletin_sc.publish_view(1,String::from("View"), rolling_hash);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View"), rolling_hash.clone()));
         }
 
         #[ink::test]
@@ -433,6 +435,7 @@ mod public_bulletin {
             let bob = InkAccountId::from([0x1; 32]);
             let alice = InkAccountId::from([0x2; 32]);
             let jane = InkAccountId::from([0x3; 32]);
+            let rolling_hash = [0; 32];
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
@@ -452,8 +455,8 @@ mod public_bulletin {
             public_bulletin_sc.evaluate_view(1, bob, String::from("OK"));
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("View"), String::from("None"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View"), String::from("None")));
+            public_bulletin_sc.publish_view(1, String::from("View"), rolling_hash);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View"), rolling_hash.clone()));
         }
 
         //
@@ -463,6 +466,7 @@ mod public_bulletin {
             let bob = InkAccountId::from([0x1; 32]);
             let alice = InkAccountId::from([0x2; 32]);
             let jane = InkAccountId::from([0x3; 32]);
+            let rolling_hash = [0; 32];
 
             // Set special account as caller to add members
             set_caller_id(InkAccountId::default());
@@ -482,7 +486,7 @@ mod public_bulletin {
             public_bulletin_sc.evaluate_view(1, bob, String::from("NOK"));
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("View"), String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("View"), rolling_hash);
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1), None);
         }
 
@@ -491,6 +495,7 @@ mod public_bulletin {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1;32]);
             let alice = InkAccountId::from([0x2; 32]);
+            let rolling_hash = [0; 32];
 
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
@@ -506,7 +511,7 @@ mod public_bulletin {
             public_bulletin_sc.increment_cur_height();
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("View"), String::from("None"));
+            public_bulletin_sc.publish_view(1, String::from("View"), rolling_hash);
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(1), None);
             assert_eq!(public_bulletin_sc.get_wrapped_replies(1), None);
         }
@@ -515,31 +520,36 @@ mod public_bulletin {
         fn two_views_correct_hash() {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
+            let rolling_hash_1 = [0; 32];
+            let rolling_hash_2 = [127, 110, 16, 22, 213, 67, 9, 4, 204, 55, 120, 98, 222, 12, 102, 77, 130,
+                146, 117, 60, 100, 17, 221, 118, 78, 71, 69, 143, 72, 244, 182, 161];
 
             // Set special account as caller to add member
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("View1"), String::from("None"));
-            public_bulletin_sc.publish_view(2, String::from("View2"), String::from("6d8694a1e486efa9"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View1"), String::from("None")));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(2).unwrap()), (String::from("View2"), String::from("6d8694a1e486efa9")));
+            public_bulletin_sc.publish_view(1, String::from("View1"), rolling_hash_1);
+            public_bulletin_sc.publish_view(2, String::from("View2"), rolling_hash_2);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View1"), rolling_hash_1.clone()));
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(2).unwrap()), (String::from("View2"), rolling_hash_2.clone()));
         }
 
         #[ink::test]
         fn two_views_incorrect_hash() {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
+            let rolling_hash_1 = [0; 32];
+            let rolling_hash_2 = [1; 32];
 
             // Set special account as caller to add member
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("View1"), String::from("None"));
-            public_bulletin_sc.publish_view(2, String::from("View2"), String::from("IncorrectHash"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View1"), String::from("None")));
+            public_bulletin_sc.publish_view(1, String::from("View1"), rolling_hash_1);
+            public_bulletin_sc.publish_view(2, String::from("View2"), rolling_hash_2);
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("View1"), rolling_hash_1.clone()));
             assert_eq!(public_bulletin_sc.get_wrapped_commitment(2), None);
         }
 
@@ -547,15 +557,16 @@ mod public_bulletin {
         fn two_commitments_same_height_and_member() {
             let mut public_bulletin_sc = PublicBulletin::default();
             let bob = InkAccountId::from([0x1; 32]);
+            let rolling_hash_1 = [0; 32];
 
             // Set special account as caller to add member
             set_caller_id(InkAccountId::default());
             public_bulletin_sc.add_member(bob);
 
             set_caller_id(bob);
-            public_bulletin_sc.publish_view(1, String::from("FirstView"), String::from("None"));
-            public_bulletin_sc.publish_view(1, String::from("TryReplaceFirst"), String::from("None"));
-            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("FirstView"), String::from("None")));
+            public_bulletin_sc.publish_view(1, String::from("FirstView"), rolling_hash_1);
+            public_bulletin_sc.publish_view(1, String::from("TryReplaceFirst"), rolling_hash_1.clone());
+            assert_eq!(*(public_bulletin_sc.get_wrapped_commitment(1).unwrap()), (String::from("FirstView"), rolling_hash_1.clone()));
         }
 
         #[ink::test]
