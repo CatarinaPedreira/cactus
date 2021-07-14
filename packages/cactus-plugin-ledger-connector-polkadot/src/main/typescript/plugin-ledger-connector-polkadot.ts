@@ -8,6 +8,7 @@ import { Optional } from "typescript-optional";
 import { PluginRegistry } from "@hyperledger/cactus-core";
 
 import {
+  IPluginLedgerConnector,
   ConsensusAlgorithmFamily,
   PluginAspect,
   IPluginWebService,
@@ -33,9 +34,42 @@ export interface IPluginLedgerConnectorPolkadotOptions
   instanceId: string;
 }
 
-// Should also implement IPluginLedgerConnector
+interface RunTransactionRequest {
+  keychainId: string;
+  keychainRef: string;
+  channelName: string;
+  chainCodeId: string;
+  invocationType: string; // Change later
+  functionName: string;
+  functionArgs: Array<string>;
+}
+
+interface RunTransactionResponse {
+  functionOutput: string;
+}
+
+interface DeployContractInkBytecodeRequest {
+  inkSource: string; // Change later
+  inkMod: string; // Change later
+  moduleName: string;
+  pinnedDeps: Array<string>;
+  modTidyOnly: boolean;
+}
+
+interface DeployContractInkBytecodeResponse {
+  result: string;
+}
+
 export class PluginLedgerConnectorPolkadot
-  implements ICactusPlugin, IPluginWebService {
+  implements
+    IPluginLedgerConnector<
+      DeployContractInkBytecodeRequest,
+      DeployContractInkBytecodeResponse,
+      RunTransactionRequest,
+      RunTransactionResponse
+    >,
+    ICactusPlugin,
+    IPluginWebService {
   public static readonly CLASS_NAME = "PluginLedgerConnectorPolkadot";
   public readonly DEFAULT_WSPROVIDER = "wss://rpc.polkadot.io";
   private readonly instanceId: string;
@@ -107,4 +141,27 @@ export class PluginLedgerConnectorPolkadot
   > {
     return ConsensusAlgorithmFamily.STAKE;
   }
+  //
+  // public async transact(req: RunTransactionRequest) {
+  //   //const fnTag = `${this.className}#transact()`;
+  // }
+  //
+  // // criar a open api para conter os requests
+  // public async deployContract(
+  // ) {
+  //   // const fnTag = `${this.className}#deployContract()`;
+  //   // Checks.truthy(req, `${fnTag} req`);
+  //   //
+  //   // const web3SigningCredential = req.web3SigningCredential; // verificar o que é esta variável exatamente, e qual será a sua forma correta aqui
+  //   //
+  //   // return this.transact({
+  //   //   transactionConfig: {
+  //   //     data: `0x${req.bytecode}`,
+  //   //     from: web3SigningCredential.ethAccount, // verificar se aqui tb é mesmo ethAccount
+  //   //     gas: req.gas,
+  //   //     gasPrice: req.gasPrice,
+  //   //   },
+  //   //   web3SigningCredential,
+  //   // });
+  // }
 }
