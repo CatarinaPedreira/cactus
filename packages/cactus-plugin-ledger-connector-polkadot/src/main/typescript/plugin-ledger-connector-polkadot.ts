@@ -141,27 +141,13 @@ export class PluginLedgerConnectorPolkadot
   > {
     return ConsensusAlgorithmFamily.STAKE;
   }
-  //
-  // public async transact(req: RunTransactionRequest) {
-  //   //const fnTag = `${this.className}#transact()`;
-  // }
-  //
-  // // criar a open api para conter os requests
-  // public async deployContract(
-  // ) {
-  //   // const fnTag = `${this.className}#deployContract()`;
-  //   // Checks.truthy(req, `${fnTag} req`);
-  //   //
-  //   // const web3SigningCredential = req.web3SigningCredential; // verificar o que é esta variável exatamente, e qual será a sua forma correta aqui
-  //   //
-  //   // return this.transact({
-  //   //   transactionConfig: {
-  //   //     data: `0x${req.bytecode}`,
-  //   //     from: web3SigningCredential.ethAccount, // verificar se aqui tb é mesmo ethAccount
-  //   //     gas: req.gas,
-  //   //     gasPrice: req.gasPrice,
-  //   //   },
-  //   //   web3SigningCredential,
-  //   // });
-  // }
+
+  public async transact() {
+    throw new Error("Method not implemented yet!");
+  }
+
+  // criar a open api para conter os requests
+  public async deployContract() {
+    throw new Error("Method not implemented yet!");
+  }
 }
